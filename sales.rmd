@@ -1,0 +1,259 @@
+---
+title: "Sales Analysis"
+author: "Lawrence May"
+date: "22/08/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1.) Read in the data
+```{r}
+defaultW <- getOption("warn") 
+options(warn = -1) 
+library(tidyverse)
+#Reading in the data
+retail <- read.csv("/Users/lawrence/Downloads/sales/online_retail_II.csv")
+head(retail)
+```
+
+2.) Prepare and comment on the following exploratory plots:
+Total daily, weekly and monthly sales volumes
+
+```{r}
+#Preparing the data
+retail %>% 
+  separate(InvoiceDate, into=c('Date'), sep = " ", remove=F) %>% 
+  separate(InvoiceDate, into=c('MonthYear'), sep = c(7), remove=F) %>%
+  mutate(Sales = retail$Quantity * retail$Price)-> retail
+
+aggregate(Sales ~ MonthYear, data=retail, FUN=sum) %>% separate(MonthYear, into=c('Year'), sep = c(4), remove=F) -> monthly_yearly
+aggregate(Sales ~ Date, data=retail, FUN=sum) -> daily
+
+val<-c(mean(daily$Sales),median(daily$Sales),max(daily$Sales),min(daily$Sales))
+title<-c('Mean','Median','Max','Min')
+rbind(title,val)
+colnames(daily)<-c("Date","SalesVolume")
+```
+
+```{r}
+#Daily sales volume plot
+ggplot(daily, aes(Date, SalesVolume, group = 1)) + geom_line() + ggtitle("Daily total sales volume")
+```
+Sales volume appears to be highly volatile by day, with the mean being at 32,000 and median at 27,000 pounds per day, a few outliers however increasing to up to 117,000 pounds per day (maybe a sale?) and -22000, maybe just after Christmas when everyone is returning their presents.
+
+```{r}
+#Sales volume by month and year
+ggplot(monthly_yearly, aes(x=MonthYear, y=Sales)) + geom_bar(stat="identity", fill = monthly_yearly$Year) +ggtitle("Monthly/ Yearly sales volume")
+```
+
+There appears to be a clear monthly pattern with increasing sales towards the end of the year (and the Christmas season). 
+
+
+Last months’ revenue share by product and by customer
+
+
+```{r}
+retail[retail$MonthYear=='2011-12',] ->lastMonth
+lastMonth<-lastMonth[!(lastMonth$StockCode=="DOT" | lastMonth$StockCode=="CRUK" | lastMonth$StockCode=="POST" | lastMonth$StockCode=="C2" | lastMonth$StockCode=="AMAZONFEE"),]   #Remove postage, fees and other sales unrelated expenses 
+
+by_cust <- lastMonth %>% 
+    group_by(Customer.ID) %>%
+    summarise(TotalSales=sum(Sales)) %>%
+    arrange(desc(TotalSales)) %>%  
+    mutate(Index = 1:n(), Customer.ID = ifelse(Index > 10, "Others", Customer.ID))
+
+#10 largest customers
+ggplot(by_cust[!(by_cust$Customer.ID=="Others" | is.na(by_cust$Customer.ID)),], aes(x = reorder(Customer.ID, -TotalSales), y = TotalSales)) +     geom_bar(stat = "identity", aes(fill = Customer.ID)) +
+    ggtitle("Last months’ revenue share by customer (10 largest customers)")
+
+#all customers
+ggplot(by_cust, aes(x = reorder(Customer.ID, -TotalSales), y = TotalSales)) + 
+    geom_bar(stat = "identity", aes(fill = Customer.ID)) +
+    ggtitle("Last months’ revenue share by customer (all customers)")
+  
+```
+
+Sales appear to be highly fragmented, there is no one big customer.
+
+
+```{r}
+by_prod <- lastMonth %>% 
+    group_by(StockCode) %>%
+    summarise(TotalSales=sum(Sales)) %>%
+    arrange(desc(TotalSales)) %>% mutate(Index = 1:n(), StockCode = ifelse(Index > 10, "Others", StockCode))
+
+#10 products with highest revenue share
+ggplot(by_prod[!(by_prod$StockCode=="Others"),], aes(x = reorder(StockCode, -TotalSales), y = TotalSales)) + 
+  geom_bar(stat = "identity", aes(fill = StockCode))+
+  ggtitle("Last months’ revenue share by product for 10 best selling products")
+
+#All products
+ggplot(by_prod, aes(x = reorder(StockCode, -TotalSales), y = TotalSales)) + 
+  geom_bar(stat = "identity", aes(fill = StockCode))+
+  ggtitle("Last months’ revenue share by product")
+
+sum(by_prod$TotalSales)  #Total sales this month
+
+```
+
+Again, sales appear to be highly fragmented by product type, each having monthly sales between 100-10000 pounds, out of total sales of 441393.9 pounds.
+
+
+
+Weighted average monthly sale price by volume
+
+
+```{r}
+retail %>% group_by(MonthYear) %>% summarise(vwap = sum(Sales)/sum(Quantity)) -> VWAP
+
+ggplot(VWAP, aes(MonthYear, vwap, group = 1)) + geom_line() + ggtitle("Weighted average monthly sale price by volume")
+```
+
+There is no obvious trend in the weighted average monthly sale price by volume, it fluctuates between 1.60 to 2.20 pounds.
+
+
+3. You’ll note the dataset contains negative volumes, relating to sales returns. Some of
+these returns relate to products sold before the data collection date, thus should be
+filtered from the dataset before we use it for modelling.
+Describe and implement a logical way of performing this task
+
+```{r import-data, cache=TRUE}
+#The code does not appear to be working on markdown running on my laptop, I have instead run the below in a separate script and saved the result to a csv, which I am now reading in again.
+
+retail <-read.csv('/Users/lawrence/Downloads/sales/retail.csv')
+# #Select returned items
+# retail %>% filter(Sales < 0) %>% select(StockCode,Customer.ID,Sales,Invoice,MonthYear) %>% mutate (Sales = abs(Sales))-> returns
+# retail %>% filter(Sales > 0) -> no_returns
+# 
+# #Only consider returns within 3 months after the dataset collection started which is reasonable as most returns policies will only allow returns within 30-60 days. Otherwise would take too long on my computer and not really necessary
+# returns <- returns[(returns$MonthYear=='2009-12' | returns$MonthYear=='2010-01' | returns$MonthYear=='2010-02'),]
+# 
+# #Check if the original purchase with the same metrics (Customer.ID, StockCode and +ive Sales) exists, if not remove from retail dataframe
+# apply(returns,MARGIN = 1, FUN = function(x){
+#   if(nrow(no_returns[(no_returns$StockCode==x[1] & no_returns$Customer.ID==as.double(x[2]) & no_returns$Sales==as.double(x[3])),]) == 0){
+#     retail<<-retail[!(retail$Invoice==x[4]),] #Accesses and modifies global variable retail by removing the appropriate entries
+#   }
+# })
+```
+
+A logical to filter these returns out would be to match them with the initial sales order. This cannot be found directly from the invoice, therefore we would need to match it by customer id, stockcode, absolute value of sales and roughly the same time period. 
+
+
+a)The owner of the online retailer wants to know how much revenue to expect for this
+month (12/2011), to help him decide what sports car he buys his partner for
+Christmas.
+
+Outline a few different solutions you might suggest that solve this problem. Include in
+your description:
+
+What metrics/values you might want to use:
+
+I would suggest using combined total sales volume, be it monthly, weekly or daily, as the response variable. This is far better, easier and more accurate to model (due to CLT and large numbers) than individual purchases by specific customers or products. Doing so would result in a far more complicated model that will not necessarily result in more accurate predictions, especially considering the highly fragmented nature of sales by individual customers or products. 
+I will therefore only look at aggregate sales volume as a response variable, and use the Date as an explanatory variable to capture the underlying trend, and Month to capture recurring monthly sales patterns.
+
+How you would aggregate those metrics:
+
+The aggregation could be done using the aggregate function, or summarize using tidyverse.
+
+What model/algorithm or logic you would use to make a prediction on them:
+
+I would use the linear model lm() function in r with totalsales (monthly, daily or weekly) as the response and Date and as.factor(Month) as the explanatory variables.
+
+What uncertainties you might need to explore
+I would then look at confidence intervals, r^2, residuals and other goodness of fit measures to determine if this is a good fit. If not, another option would be to use the time series functionalities in R with ts() or holtwinters() functions, or potentially to use a glm() as maybe a poisson or other distribution is better suited, or taking the log of the response variable might be an option to improve it as well given that it is sales data.
+
+Looking at the monthly patterns in total sales volume observed in the two previous years, December was the month with the second highest sales in 2010, unless there is a strong reason to suggest otherwise I would expect a similar pattern in 2011. Additionally, overall sales growth will need to be taken into account to come up with an accurate estimation for this years December sales. 
+We also have data for this year's December of up to the 9th of December. This could be useful for estimation by comparing it with how the last two years full-December sales data compared with sales up until the 9th of December.
+
+In addition, something like a profit margin, COGS and tax estimation would be helpful to determine if the owner can afford the Ferrari or not as just simple sales revenue does not say too much about the owners' bottom line.
+
+b) Select the method you think is the best approach, and explain why. Your justification
+should weigh up the effort required and expected accuracy.
+
+For starters, I think the lm() is the best approach to start as it is the most simple and easy to implement one, while likely still yielding reasonably good accuracy.
+
+c) Show an implementation one of your solutions (doesn’t need to be your selected
+method), and show the final forecast alongside the historical time series.
+
+```{r}
+aggregate(Sales ~ MonthYear, data=retail, FUN=sum) %>% separate(MonthYear,into=c('Year','Month')) %>% select(-c(Year)) -> sales
+sales <- sales[-25,] #Remove last incomplete December observation
+monthly.lm <- lm(Sales ~ Month, data=sales)
+summary(monthly.lm)
+monthly.pred <- predict(monthly.lm, newdata = data.frame(Month='12'), se.fit = T) 
+
+lower<-monthly.pred$fit-1.96*monthly.pred$se.fit
+upper<-monthly.pred$fit+1.96*monthly.pred$se.fit
+cbind(monthly.pred$fit,lower,upper)
+```
+
+Just looking at historical monthly averages, we'd expect December sales to lie between 857729.8 and 1091312 pounds with 95% confidence. 
+
+```{r}
+daily.sales <- retail %>% 
+  select(Sales, MonthYear, Date) %>%     
+  separate(MonthYear,into=c('Year','Month')) %>% 
+  select(-c(Year)) %>%
+  group_by(Date) %>% 
+  summarise(DailySales=sum(Sales), Month) #Creates Month variable and aggregates daily sales
+
+
+daily.sales <- unique(daily.sales) #Remove redundant rows
+daily.sales$Date<- as.Date(daily.sales$Date) #Convert date to Date object
+daily.sales<-daily.sales[-604,] #Exclude the last day as sales don't appear to be complete for that day 
+
+daily.lm<- lm(DailySales ~ Date + Month, data=daily.sales)
+summary(daily.lm)
+  
+```
+
+Looking at this model, we can see that there appears to be a (weak) sales growth trend, on average sales tend to increase by about 5 pounds on every calendar day. This trend is not very significant however (P-value = 0.08). Using this model to predict remaining sales in December:
+
+```{r}
+month<-c(rep('12',23))
+date<-c('2011-12-09','2011-12-10','2011-12-11','2011-12-12','2011-12-13','2011-12-14','2011-12-15','2011-12-16','2011-12-17','2011-12-18','2011-12-19','2011-12-20','2011-12-21','2011-12-22','2011-12-23','2011-12-24','2011-12-25','2011-12-26','2011-12-27','2011-12-28','2011-12-29','2011-12-30','2011-12-31')
+dec<-data.frame(date,month)
+names(dec) <- c('Date', 'Month')
+dec$Date<-as.Date(dec$Date)
+
+daily.pred <- predict(daily.lm, newdata = dec, se.fit = T)
+
+lower<-daily.pred$fit-1.96*daily.pred$se.fit
+upper<-daily.pred$fit+1.96*daily.pred$se.fit
+
+
+prev.sales<- retail %>% filter((Date>'2011-11-30' & Date < '2011-12-09')) %>% summarise(TotalSales = sum(Sales))  #Total sales so far in the up to the 12.12.2011, excluding the last day which does not appear to be complete
+prev.sales<-prev.sales[[1]]
+
+cbind(sum(daily.pred$fit)+prev.sales,sum(lower)+prev.sales,sum(upper)+prev.sales) #Predictions for total sales this december, considering existing sales data from the first 8 days
+
+last.dec<- retail %>% filter((Date>'2010-11-30' & Date < '2011-01-01')) %>% summarise(TotalSales = sum(Sales)) #Last years december total sales
+last.dec[[1]]
+```
+
+This model taking into account the growth trend would predict total sales to lie between 1461205 and 1699748 pounds. This figure seems quite high, especially considering last years total December sales were only 1126445. The model is likely putting too much weight on the sales increase from December 2009 to December 2010. 
+
+```{r}
+this.dec.frac <-retail %>% filter((Date>'2011-11-30' & Date < '2011-12-09')) %>% summarise(TotalSales = sum(Sales))  #Dec sales until the 9th this year
+last.dec.frac <-retail %>% filter((Date>'2010-11-30' & Date < '2010-12-09')) %>% summarise(TotalSales = sum(Sales))  #Dec sales until the 9th last year
+this.dec.frac[[1]]  #Total sales this year in the first eight December days
+last.dec.frac[[1]]  #Total sales last year in the first eight December days
+
+frac<- last.dec.frac[[1]]/last.dec[[1]] #Fraction of total December sales in the first eight days
+frac 
+this.dec.frac[[1]]/frac   #Extrapolating this percentage on this years first eight days sales.
+```
+
+Another interesting point is that total sales in the first eight days of December last year were about 650,000 pounds, while this year this figure is only at about 401,000 pounds. Given that last year 57% of December sales occured in these first eight days, this may be cause for concern in accuracy of the model, especially the second one.
+Looking purely at these numbers, we would only expect about 700,000 pounds of total December sales this year. However, this might just be a coincidence, maybe Christmas shopping is just left a bit late in 2011 compared to 2010.
+
+
+How confident are you of this forecast - do you back your prediction enough to
+recommend the new Ferrari?
+
+Based on these estimates, I would give a conservative estimate of Sales to be between 700,000 to 900,000 pounds. Depending on the owners profit margin, this could be enough for the Ferrari, but to be on the cautious side maybe a Toyota would be a better choice for this year.
