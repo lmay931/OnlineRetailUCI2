@@ -1,0 +1,631 @@
+---
+title: "Sales Analysis"
+author: "Lawrence May"
+date: "22/08/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1.) Read in the data
+```{r}
+defaultW <- getOption("warn") 
+options(warn = -1)
+library(tidyverse)
+#Reading in the data
+retail <- read.csv("/Users/lawrence/Google Drive/DS/Time Series/OnlineRetailUCI2-master/online_retail_II.csv")
+head(retail)
+```
+
+2.) Prepare and comment on the following exploratory plots:
+Total daily, weekly and monthly sales volumes
+
+```{r}
+#Preparing the data
+retail %>% 
+  separate(InvoiceDate, into=c('Date'), sep = " ", remove=F) %>% 
+  separate(InvoiceDate, into=c('MonthYear'), sep = c(7), remove=F) %>%
+  mutate(Sales = retail$Quantity * retail$Price)-> retail
+
+aggregate(Sales ~ MonthYear, data=retail, FUN=sum) %>% separate(MonthYear, into=c('Year'), sep = c(4), remove=F) -> monthly_yearly
+aggregate(Sales ~ Date, data=retail, FUN=sum) -> daily
+
+val<-c(mean(daily$Sales),median(daily$Sales),max(daily$Sales),min(daily$Sales))
+title<-c('Mean','Median','Max','Min')
+rbind(title,val)
+colnames(daily)<-c("Date","SalesVolume")
+```
+
+```{r}
+#Daily sales volume plot
+ggplot(daily, aes(Date, SalesVolume, group = 1)) + geom_line() + ggtitle("Daily total sales volume")
+```
+Sales volume appears to be highly volatile by day, with the mean being at 32,000 and median at 27,000 pounds per day, a few outliers however increasing to up to 117,000 pounds per day (maybe a sale?) and -22000, maybe just after Christmas when everyone is returning their presents.
+
+```{r}
+#Sales volume by month and year
+ggplot(monthly_yearly, aes(x=MonthYear, y=Sales)) + geom_bar(stat="identity", fill = monthly_yearly$Year) +ggtitle("Monthly/ Yearly sales volume")
+```
+
+There appears to be a clear monthly pattern with increasing sales towards the end of the year (and the Christmas season). 
+
+
+Last months’ revenue share by product and by customer
+
+
+```{r}
+retail[retail$MonthYear=='2011-12',] ->lastMonth
+lastMonth<-lastMonth[!(lastMonth$StockCode=="DOT" | lastMonth$StockCode=="CRUK" | lastMonth$StockCode=="POST" | lastMonth$StockCode=="C2" | lastMonth$StockCode=="AMAZONFEE"),]   #Remove postage, fees and other sales unrelated expenses 
+
+by_cust <- lastMonth %>% 
+    group_by(Customer.ID) %>%
+    summarise(TotalSales=sum(Sales)) %>%
+    arrange(desc(TotalSales)) %>%  
+    mutate(Index = 1:n(), Customer.ID = ifelse(Index > 10, "Others", Customer.ID))
+
+#10 largest customers
+ggplot(by_cust[!(by_cust$Customer.ID=="Others" | is.na(by_cust$Customer.ID)),], aes(x = reorder(Customer.ID, -TotalSales), y = TotalSales)) +     geom_bar(stat = "identity", aes(fill = Customer.ID)) +
+    ggtitle("Last months’ revenue share by customer (10 largest customers)")
+
+#all customers
+ggplot(by_cust, aes(x = reorder(Customer.ID, -TotalSales), y = TotalSales)) + 
+    geom_bar(stat = "identity", aes(fill = Customer.ID)) +
+    ggtitle("Last months’ revenue share by customer (all customers)")
+  
+```
+
+Sales appear to be highly fragmented, there is no one big customer.
+
+
+```{r}
+by_prod <- lastMonth %>% 
+    group_by(StockCode) %>%
+    summarise(TotalSales=sum(Sales)) %>%
+    arrange(desc(TotalSales)) %>% mutate(Index = 1:n(), StockCode = ifelse(Index > 10, "Others", StockCode))
+
+#10 products with highest revenue share
+ggplot(by_prod[!(by_prod$StockCode=="Others"),], aes(x = reorder(StockCode, -TotalSales), y = TotalSales)) + 
+  geom_bar(stat = "identity", aes(fill = StockCode))+
+  ggtitle("Last months’ revenue share by product for 10 best selling products")
+
+#All products
+ggplot(by_prod, aes(x = reorder(StockCode, -TotalSales), y = TotalSales)) + 
+  geom_bar(stat = "identity", aes(fill = StockCode))+
+  ggtitle("Last months’ revenue share by product")
+
+sum(by_prod$TotalSales)  #Total sales this month
+
+```
+
+Again, sales appear to be highly fragmented by product type, each having monthly sales between 100-10000 pounds, out of total sales of 441393.9 pounds.
+
+
+
+Weighted average monthly sale price by volume
+
+
+```{r}
+retail %>% group_by(MonthYear) %>% summarise(vwap = sum(Sales)/sum(Quantity)) -> VWAP
+
+ggplot(VWAP, aes(MonthYear, vwap, group = 1)) + geom_line() + ggtitle("Weighted average monthly sale price by volume")
+```
+
+There is no obvious trend in the weighted average monthly sale price by volume, it fluctuates between 1.60 to 2.20 pounds.
+
+
+3. You’ll note the dataset contains negative volumes, relating to sales returns. Some of
+these returns relate to products sold before the data collection date, thus should be
+filtered from the dataset before we use it for modelling.
+Describe and implement a logical way of performing this task
+
+```{r import-data, cache=TRUE}
+#The code does not appear to be working on markdown running on my laptop, I have instead run the below in a separate script and saved the result to a csv, which I am now reading in again.
+
+retail <-read.csv("/Users/lawrence/Google Drive/DS/Time Series/OnlineRetailUCI2-master/retail.csv")
+# #Select returned items
+# retail %>% filter(Sales < 0) %>% select(StockCode,Customer.ID,Sales,Invoice,MonthYear) %>% mutate (Sales = abs(Sales))-> returns
+# retail %>% filter(Sales > 0) -> no_returns
+# 
+# #Only consider returns within 3 months after the dataset collection started which is reasonable as most returns policies will only allow returns within 30-60 days. Otherwise would take too long on my computer and not really necessary
+# returns <- returns[(returns$MonthYear=='2009-12' | returns$MonthYear=='2010-01' | returns$MonthYear=='2010-02'),]
+# 
+# #Check if the original purchase with the same metrics (Customer.ID, StockCode and +ive Sales) exists, if not remove from retail dataframe
+# apply(returns,MARGIN = 1, FUN = function(x){
+#   if(nrow(no_returns[(no_returns$StockCode==x[1] & no_returns$Customer.ID==as.double(x[2]) & no_returns$Sales==as.double(x[3])),]) == 0){
+#     retail<<-retail[!(retail$Invoice==x[4]),] #Accesses and modifies global variable retail by removing the appropriate entries
+#   }
+# })
+```
+
+A logical to filter these returns out would be to match them with the initial sales order. This cannot be found directly from the invoice, therefore we would need to match it by customer id, stockcode, absolute value of sales and roughly the same time period. 
+
+
+a)The owner of the online retailer wants to know how much revenue to expect for this
+month (12/2011), to help him decide what sports car he buys his partner for
+Christmas.
+
+Outline a few different solutions you might suggest that solve this problem. Include in
+your description:
+
+What metrics/values you might want to use:
+
+I would suggest using combined total sales volume, be it monthly, weekly or daily, as the response variable. This is far better, easier and more accurate to model (due to CLT and large numbers) than individual purchases by specific customers or products. Doing so would result in a far more complicated model that will not necessarily result in more accurate predictions, especially considering the highly fragmented nature of sales by individual customers or products. 
+I will therefore only look at aggregate sales volume as a response variable, and use the Date as an explanatory variable to capture the underlying trend, and Month to capture recurring monthly sales patterns.
+
+How you would aggregate those metrics:
+
+The aggregation could be done using the aggregate function, or summarize using tidyverse.
+
+What model/algorithm or logic you would use to make a prediction on them:
+
+I would use the linear model lm() function in r with totalsales (monthly, daily or weekly) as the response and Date and as.factor(Month) as the explanatory variables.
+
+What uncertainties you might need to explore
+I would then look at confidence intervals, r^2, residuals and other goodness of fit measures to determine if this is a good fit. If not, another option would be to use the time series functionalities in R with ts() or holtwinters() functions, or potentially to use a glm() as maybe a poisson or other distribution is better suited, or taking the log of the response variable might be an option to improve it as well given that it is sales data.
+
+Looking at the monthly patterns in total sales volume observed in the two previous years, December was the month with the second highest sales in 2010, unless there is a strong reason to suggest otherwise I would expect a similar pattern in 2011. Additionally, overall sales growth will need to be taken into account to come up with an accurate estimation for this years December sales. 
+We also have data for this year's December of up to the 9th of December. This could be useful for estimation by comparing it with how the last two years full-December sales data compared with sales up until the 9th of December.
+
+In addition, something like a profit margin, COGS and tax estimation would be helpful to determine if the owner can afford the Ferrari or not as just simple sales revenue does not say too much about the owners' bottom line.
+
+b) Select the method you think is the best approach, and explain why. Your justification
+should weigh up the effort required and expected accuracy.
+
+For starters, I think the lm() is the best approach to start as it is the most simple and easy to implement one, while likely still yielding reasonably good accuracy.
+
+c) Show an implementation one of your solutions (doesn’t need to be your selected
+method), and show the final forecast alongside the historical time series.
+
+```{r}
+aggregate(Sales ~ MonthYear, data=retail, FUN=sum) %>% separate(MonthYear,into=c('Year','Month')) %>% select(-c(Year)) -> sales
+sales <- sales[-25,] #Remove last incomplete December observation
+monthly.lm <- lm(Sales ~ Month, data=sales)
+summary(monthly.lm)
+monthly.pred <- predict(monthly.lm, newdata = data.frame(Month='12'), se.fit = T) 
+
+lower<-monthly.pred$fit-1.96*monthly.pred$se.fit
+upper<-monthly.pred$fit+1.96*monthly.pred$se.fit
+cbind(monthly.pred$fit,lower,upper)
+```
+
+Just looking at historical monthly averages, we'd expect December sales to lie between 857729.8 and 1091312 pounds with 95% confidence. 
+
+```{r}
+daily.sales <- retail %>% 
+  select(Sales, MonthYear, Date) %>%     
+  separate(MonthYear,into=c('Year','Month')) %>% 
+  select(-c(Year)) %>%
+  group_by(Date) %>% 
+  summarise(DailySales=sum(Sales), Month) #Creates Month variable and aggregates daily sales
+
+
+daily.sales <- unique(daily.sales) #Remove redundant rows
+daily.sales$Date<- as.Date(daily.sales$Date) #Convert date to Date object
+daily.sales<-daily.sales[-604,] #Exclude the last day as sales don't appear to be complete for that day 
+
+daily.lm<- lm(DailySales ~ Date + Month, data=daily.sales)
+summary(daily.lm)
+```
+
+Looking at this model, we can see that there appears to be a (weak) sales growth trend, on average sales tend to increase by about 5 pounds on every calendar day. This trend is not very significant however (P-value = 0.08). Using this model to predict remaining sales in December:
+
+```{r}
+month<-c(rep('12',23))
+date<-c('2011-12-09','2011-12-10','2011-12-11','2011-12-12','2011-12-13','2011-12-14','2011-12-15','2011-12-16','2011-12-17','2011-12-18','2011-12-19','2011-12-20','2011-12-21','2011-12-22','2011-12-23','2011-12-24','2011-12-25','2011-12-26','2011-12-27','2011-12-28','2011-12-29','2011-12-30','2011-12-31')
+dec<-data.frame(date,month)
+names(dec) <- c('Date', 'Month')
+dec$Date<-as.Date(dec$Date)
+
+daily.pred <- predict(daily.lm, newdata = dec, se.fit = T)
+
+lower<-daily.pred$fit-1.96*daily.pred$se.fit
+upper<-daily.pred$fit+1.96*daily.pred$se.fit
+
+
+prev.sales<- retail %>% filter((Date>'2011-11-30' & Date < '2011-12-09')) %>% summarise(TotalSales = sum(Sales))  #Total sales so far in the up to the 12.12.2011, excluding the last day which does not appear to be complete
+prev.sales<-prev.sales[[1]]
+
+cbind(sum(daily.pred$fit)+prev.sales,sum(lower)+prev.sales,sum(upper)+prev.sales) #Predictions for total sales this december, considering existing sales data from the first 8 days
+
+last.dec<- retail %>% filter((Date>'2010-11-30' & Date < '2011-01-01')) %>% summarise(TotalSales = sum(Sales)) #Last years december total sales
+last.dec[[1]]
+```
+
+This model taking into account the growth trend would predict total sales to lie between 1461205 and 1699748 pounds. This figure seems quite high, especially considering last years total December sales were only 1126445. The model is likely putting too much weight on the sales increase from December 2009 to December 2010. 
+
+```{r}
+this.dec.frac <-retail %>% filter((Date>'2011-11-30' & Date < '2011-12-09')) %>% summarise(TotalSales = sum(Sales))  #Dec sales until the 9th this year
+last.dec.frac <-retail %>% filter((Date>'2010-11-30' & Date < '2010-12-09')) %>% summarise(TotalSales = sum(Sales))  #Dec sales until the 9th last year
+this.dec.frac[[1]]  #Total sales this year in the first eight December days
+last.dec.frac[[1]]  #Total sales last year in the first eight December days
+
+frac<- last.dec.frac[[1]]/last.dec[[1]] #Fraction of total December sales in the first eight days
+frac 
+this.dec.frac[[1]]/frac   #Extrapolating this percentage on this years first eight days sales.
+```
+
+Another interesting point is that total sales in the first eight days of December last year were about 650,000 pounds, while this year this figure is only at about 401,000 pounds. Given that last year 57% of December sales occured in these first eight days, this may be cause for concern in accuracy of the model, especially the second one.
+Looking purely at these numbers, we would only expect about 700,000 pounds of total December sales this year. However, this might just be a coincidence, maybe Christmas shopping is just left a bit late in 2011 compared to 2010.
+
+
+How confident are you of this forecast - do you back your prediction enough to
+recommend the new Ferrari?
+
+Based on these estimates, I would give a conservative estimate of Sales to be between 700,000 to 900,000 pounds. Depending on the owners profit margin, this could be enough for the Ferrari, but to be on the cautious side maybe a Toyota would be a better choice for this year.
+
+While the linear model is a very useful multi-purpose tool, let's now see how a few more specialized approaches designed for time series analysis compare instead. We will be looking at exponential smoothing and models from the ARIMA family.
+
+```{r}
+library(lubridate)
+library(tidyverse)
+library(tsibble)
+library(fpp3)
+library(zoo)
+
+#Unfortunately, there appear to be some missing days with no sales. Since this leads to problems with some
+#forecasting methods, I will impute these missing days using complete() and na.approx(). This fills in missing
+#days' sales with the average of the previous and the following days' sales.
+
+retail %>% 
+  select(Sales, Date, MonthYear) %>%
+  separate(MonthYear,into=c('Year','Month')) %>%
+  select(-c(Year)) %>% group_by(Date) %>% 
+  summarise(Sales=sum(Sales),Month = as.integer(Month)) %>% unique() -> daily.sales
+
+daily.sales %>%
+  mutate(Date = as.Date(Date)) %>%
+  complete(Date = seq.Date(min(Date), max(Date), by="day")) -> daily.sales
+
+daily.sales <- as_tsibble(daily.sales,index=Date) %>% fill_gaps()
+
+daily.sales$Sales <- na.approx(daily.sales$Sales)
+daily.sales$Month <- na.approx(daily.sales$Month)
+
+autoplot(daily.sales, Sales) +
+  labs(y = "Daily sales in dollars",
+       title = "Daily sales")
+```
+
+Again, as noted before, there does appear to be some seasonal patterns going on but no clear upwards or downwards trend. Let's see what a model decomposition into trend, seasonal and cyclical components can reveal about the data. We have the choice between using an additive or multiplicative model, depending on the structure of the data. Given that we don't see a clear trend in the data, mostly seasonal variation, an additive model seems appropriate for now.
+
+```{r}
+dcmp <- daily.sales %>%
+  model(
+    classical_decomposition(Sales, type = "additive")
+  )
+components(dcmp)
+```
+
+```{r}
+components(dcmp) %>% autoplot()
+```
+
+The decompostion appears to confirm our initial observation of the absence of any significant, multi-year trend. There does however seem to be a strong yearly, cyclical pattern.
+
+A good benchmark for time series data to compare more complex models to is the naive model, which simply predicts that future values will be equal to the most recent observation. There is also a seasonal naive variant, which does the same but adjusted for seasonality. Let's fit these two simple models and see how we can improve on them further. I will use the last 30 days of data as a test set and the remainder as training set:
+
+```{r}
+#Split into training and test set
+train <- daily.sales %>%
+  filter_index(~  as.character(max(daily.sales$Date) - 30))
+
+test <- daily.sales %>%
+  filter_index(as.character(max(daily.sales$Date) - 29) ~ .)
+
+#Fit naive and seasonal naive models
+sales_fit_naive <- train %>% model(`Naïve` = NAIVE(Sales))
+sales_fit_snaive <- train %>% model(`Seasonal naïve` = SNAIVE(Sales))
+
+# Generate forecasts for 30 days
+sales_fc_naive <- sales_fit_naive %>% forecast(h = 30)
+sales_fc_snaive <- sales_fit_snaive %>% forecast(h = 30)
+
+# Plot forecasts against actual values
+sales_fc_naive %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    test,
+    colour = "grey", alpha=0.6
+  ) +
+  labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for final 30 days of sales"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+
+sales_fc_snaive %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    test,
+    colour = "grey", alpha=0.6
+  ) +
+  labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for final 30 days of sales"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+Not a bad first model. Let's take a look at the residuals to see if there is more data we can capture in our model:
+
+```{r}
+daily.sales %>%
+  model(NAIVE(Sales)) %>%
+  gg_tsresiduals()
+```
+```{r}
+daily.sales %>%
+  model(NAIVE(Sales)) %>% augment() %>% features(.innov, ljung_box, lag = 730, dof = 0)
+```
+Both the acf plot and the ljung_box test indicate that there is in fact significant auto-correlation in the residuals, indicating that we should proceed and try fit a more complex model. Let's see how they behave for the seasonal naive model.
+```{r}
+daily.sales %>%
+  model(SNAIVE(Sales)) %>%
+  gg_tsresiduals()
+```
+```{r}
+daily.sales %>%
+  model(SNAIVE(Sales)) %>% augment() %>% features(.innov, ljung_box, lag = 730, dof = 0)
+```
+Again, we see significant auto-correlation with the lags, and a highly significant p-value in the ljung box test. Let's proceed with a few more complex models. Let's take a look at some performance metrics, in particular RMSE and MAE. 
+
+```{r}
+rbind(accuracy(sales_fc_naive, daily.sales),accuracy(sales_fc_snaive, daily.sales))
+```
+We can see that the SNaive model has a much lower error than the naive one. Let's see how a few more complex models compare to this. Let's try fitting a regression model using trend and dummy variables for each day of the week:
+
+## Linear Time Series model
+
+```{r}
+sales_lm <- train %>%
+  model(TSLM(Sales ~ trend() + season()))  #Trend + day of the week
+report(sales_lm)
+```
+```{r}
+sales_lm_fc <- sales_lm %>% forecast(h = 30)
+sales_lm_fc %>%
+  autoplot(train) +
+  labs(
+    title = "Forecasts of daily sales using regression",
+    y = "Sales in Pounds"
+  )
+```
+The linear model appears to be putting too much weight on the average sales value from earlier in the year. 
+```{r}
+accuracy(sales_lm_fc,daily.sales)
+```
+The linear model's prediction therefore is quite far off, performing even worse than the naive model.
+
+## Exponential Smoothing (ETS)/ Holt- Winters
+
+Let's take a look at how a model from the exponential smoothing (ETS) family of models performs instead.
+```{r}
+hw_fit_add <- train %>%
+  model(
+    additive = ETS(Sales ~ error("A") + trend("A") + season("A"))
+  )
+hw_fit_mul <- train %>%
+  model(
+    multiplicative = ETS(Sales ~ error("M") + trend("A") + season("M"))
+  )
+hw_auto_fit <- train %>%
+  model(
+    multiplicative = ETS(Sales)
+  )
+report(hw_fit_add); report(hw_fit_mul); report(hw_auto_fit)
+```
+
+All three information criteria (AIC,AICc and BIC) seem pretty close to each other for all three models. Let's see how their forecasts compare.
+
+```{r}
+fc_hw_add <- hw_fit_add %>% forecast(h = 30)
+fc_hw_mul <- hw_fit_mul %>% forecast(h = 30)
+fc_hw_auto <- hw_auto_fit %>% forecast(h=30)
+
+fc_hw_add %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    test,
+    colour = "grey", alpha=0.6
+  ) +
+  labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for final 30 days of sales (Additive HW forecast)"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+
+
+fc_hw_mul %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    test,
+    colour = "grey", alpha=0.6
+  ) +
+  labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for final 30 days of sales (Multiplicative HW forecast)"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+
+fc_hw_auto %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    test,
+    colour = "grey", alpha=0.6
+  ) +
+  labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for final 30 days of sales (Multiplicative HW forecast)"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+Both models appear to be quite similar to the seasonal naive approach, without any strong trend or cyclical component. This perhaps makes sense since we were not able to identify any significant trends in the training data.
+
+
+```{r}
+rbind(accuracy(fc_hw_add, daily.sales),accuracy(fc_hw_mul, daily.sales),accuracy(fc_hw_auto, daily.sales))
+```
+
+Despite the increased complexity of the three models, the seasonal naive model still appears to be the slightly better approximation for the data, with a RMSE of 14867.63.
+
+## ARIMA model
+
+Let's see how another popular group, the ARIMA family of models, performs on this dataset. ARIMA is another very popular approach for time series forecasting. The idea here is, as opposed to exponential smoothing where the predictions are based on trend and seasonality of the data, to make predictions based on autocorrelation of future observations with the past.
+
+The ARIMA class of models requires time series to be made stationary in order to make useful predictions. Stationarity refers to the series not containing any trend or seasonality, and rather just have random white noise or unpredictable cycles. Variance should also be roughly constant, if it is not a transformation such as taking the logarithm of the series or a Box-Cox transformation can be used.
+
+In many time series, this is not the case. In these situations, a technique called differencing can be used to make a series stationary. There are two common forms of differencing: taking the first order difference, which simply refers to subtracting the previous observation from every observation. This makes the time series essentially a series of changes from the last observation. In the example of stock prices, this means instead of a time series of stock prices it simply becomes a time series of daily stock price changes, which in a lot of cases tend to be stable.
+The second common form is taking the seasonal difference, if there is a strong seasonal pattern. If the pattern is quarterly, for example, this means subtracting the most recent quarter from each quarterly observation, making the time series essentially a series of quarterly changes.
+
+Checking for stationarity can be done by inspecting the time series plot, as well as looking at ACF and PACF plots. Having seen the time plot above, it appears that differencing might be a good idea. Let's take a look at the first order difference:
+
+```{r}
+daily.sales %>%  gg_tsdisplay(difference(Sales) , plot_type='partial')
+```
+It appears that there is a weekly pattern that the data is autocorrelated with. Let's also take the weekly difference now:
+
+```{r}
+daily.sales %>%
+  gg_tsdisplay(difference(Sales, 7) %>% difference(),
+               plot_type='partial') +
+  labs(title = "Double differenced", y="")
+```
+Looking at the plot, a 1st order MA model with a seasonal MA(1) might be appropriate. Let's see how this works. I will try fit a ARIMA(0,1,2)(0,1,1) model first, and also see how an automatically fitted model performs as well.
+
+```{r}
+fit <- train %>%
+  model(
+    arima012011 = ARIMA(Sales ~ pdq(0,1,2) + PDQ(0,1,1)),
+    arima210011 = ARIMA(Sales ~ pdq(2,1,0) + PDQ(0,1,1)),
+    arima312011 = ARIMA(Sales ~ pdq(3,1,2) + PDQ(0,1,1)),
+    auto = ARIMA(Sales, stepwise = FALSE, approx = FALSE) #By setting stepwise and approx to false we make the algorithm work a little harder to find the right model
+  )
+```
+
+```{r}
+fc_arima <- fit %>% forecast(h=30)
+fc_arima %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    test,
+    colour = "grey", alpha=0.6
+  ) +
+  labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for final 30 days of sales (ARIMA forecast)"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+```{r}
+accuracy(fc_arima, daily.sales)
+```
+
+Horray, finally a model that performs better than our seasonal naive model! The arima312011 model has a RMSE of 14856 on the test data. Interestingly, the automatically selected model performs the worst. Letting the computer do all the thinking sometimes can be dangerous it appears. Given that this is the best-performing model out of all the models we have tried, I will use this to make a final prediction for total sales in the month of December and compare this to how the linear model from earlier on compares.
+
+## Neural Network model
+
+I will introduce one more model into this analysis, which is based on fitting a neural network on the lags of the data to predict future values. I will be using the NNETAR() function for this:
+
+```{r}
+train %>%
+  model(nn102 = NNETAR(Sales,p=10,P=2),
+        nnauto = NNETAR(Sales)
+        ) -> nn_fit
+fc_nn <- nn_fit %>% forecast(h = 30)
+
+fc_nn %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    test,
+    colour = "grey", alpha=0.6
+  ) +
+  labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for final 30 days of sales (ARIMA forecast)"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+Visually it appears as if both models quite nicely capture some of the seasonal spikes in the data. However, they appear to be falling down a bit too fast again.
+
+```{r}
+accuracy(fc_nn, daily.sales)
+```
+The accuracy of the Neural network unfortunately isn't quite as high as the graph might have suggested. I will be sticking to the ARIMA model for my final forecast.
+
+## Final prediction
+
+```{r}
+final_fit <- daily.sales[1:738,] %>% model(ARIMA(Sales ~ pdq(3,1,2) + PDQ(0,1,1)))
+report(fit)
+```
+```{r}
+fc_arima <- final_fit %>% forecast(h=23)
+fc_arima %>%
+  autoplot(daily.sales, level = NULL) + labs(
+    y = "Daily Sales (in Pounds)",
+    title = "Forecasts for December 2011 sales (ARIMA forecast)"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+Let's take a look back at our initial linear model and see how this compares:
+
+## Looking back at the linear model
+
+Let's come back to our linear model that I fitted last time and see how this compares to these specialised time series approaches. I will refit the model using the same training/ test split that I have used for the other two sets to ensure comparability.
+
+```{r}
+pred_df <- data.frame(date,daily.pred$fit) %>%  
+  mutate(date = as.Date(date))
+pred_df
+
+autoplot(daily.sales, Sales) +
+  labs(y = "Daily sales in dollars",
+       title = "Daily sales") +
+  autolayer(
+    as_tsibble(pred_df),
+    colour = "blue"
+  )
+```
+Visually, the linear model looks very similar to the naive model which simply takes the last observation as its forecasted value.
+
+```{r}
+# #Split into training and test set
+
+train <- daily.sales[1:573,]
+test <- daily.sales[574:603,]
+test  %>% select(-c(Sales)) -> newdata
+
+fit <- train %>%
+  model(
+    lm = TSLM(Sales ~ Month + Date)
+  )
+newdata
+fc <- forecast(fit, new_data = newdata)
+
+train %>%
+  autoplot(Sales) +
+  autolayer(fc) +
+  labs(title = "US consumption", y = "% change")
+```
+
+```{r}
+accuracy(fc, daily.sales)
+```
+The initial model had a RMSE of 24,000. The ARIMA model demonstrates a significant improvement in accuracy of almost 60%. 
+
+## Conclusion
+
+```{r}
+prev.sales<- retail %>% filter((Date>'2011-11-30' & Date < '2011-12-09')) %>% summarise(TotalSales = sum(Sales))  #Total sales so far in the up to the 12.12.2011, excluding the last day which does not appear to be complete
+prev.sales<-prev.sales[[1]]
+
+print("Total projected sales for December 2011 using ARIMA:");sum(fc_arima$.mean)+prev.sales
+```
+
+Using the ARIMA forecast model we come to a total projected sales figure of 1,770,537 pounds.
